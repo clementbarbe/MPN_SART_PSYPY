@@ -7,7 +7,7 @@ Protocole fidèle à Robertson et al. (1997) et à l'annexe McGill :
     • Digit 250 ms → Mask 900 ms → digit suivant immédiat (SOA = 1150 ms, PAS d'ISI)
     • 4 tailles de police (tiny, small, medium, large)
     • 3 écrans d'instructions (FR) avec visuel du masque
-    • Métriques : d', criterion c, beta, RTCV
+    • Métriques live : GO/NOGO accuracy, commissions, omissions, RT moyen/médian
 
 Entrée  : SART_trials_McGill.xlsx
 Sortie  : McGill_SART_Raw_Data_*.xlsx  +  data/sart/qc/SART_TimingQC_*.csv
@@ -18,7 +18,6 @@ import os
 import numpy as np
 import pandas as pd
 from datetime import datetime
-from scipy.stats import norm
 
 from psychopy import visual, core
 from utils.base_task import BaseTask
@@ -39,12 +38,8 @@ DEFAULT_CONFIG = {
 }
 
 MODE_ALIASES = {
-    'full':          'full',
-    'training':      'training_only',
-    'training_only': 'training_only',
-    'train':         'training_only',
-    'test':          'test_only',
-    'test_only':     'test_only',
+    'training':         'training_only',
+    'classic':          'test_only',
 }
 
 SIZE_MAP = {
@@ -236,23 +231,22 @@ class sart(BaseTask):
         stim.draw()
 
         if show_mask:
-            self.mask_circle.pos = (0.0, -0.10)
-            self.mask_cross_a.start = (-self.MASK_RADIUS * 0.70,
-                                       -self.MASK_RADIUS * 0.70 - 0.10)
-            self.mask_cross_a.end   = ( self.MASK_RADIUS * 0.70,
-                                        self.MASK_RADIUS * 0.70 - 0.10)
-            self.mask_cross_b.start = (-self.MASK_RADIUS * 0.70,
-                                        self.MASK_RADIUS * 0.70 - 0.10)
-            self.mask_cross_b.end   = ( self.MASK_RADIUS * 0.70,
-                                       -self.MASK_RADIUS * 0.70 - 0.10)
-            self._draw_mask()
-            # Reset
-            self.mask_circle.pos = (0.0, 0.0)
+            # Masque local pour les instructions — ne touche pas aux stimuli partagés
             arm = self.MASK_RADIUS * 0.70
-            self.mask_cross_a.start = (-arm, -arm)
-            self.mask_cross_a.end   = ( arm,  arm)
-            self.mask_cross_b.start = (-arm,  arm)
-            self.mask_cross_b.end   = ( arm, -arm)
+            y_off = -0.10
+            circle = visual.Circle(
+                self.win, radius=self.MASK_RADIUS, edges=64,
+                lineColor='white', lineWidth=3.0, fillColor=None,
+                pos=(0.0, y_off), units='height')
+            cross_a = visual.Line(
+                self.win, start=(-arm, -arm + y_off), end=(arm, arm + y_off),
+                lineColor='white', lineWidth=3.0, units='height')
+            cross_b = visual.Line(
+                self.win, start=(-arm, arm + y_off), end=(arm, -arm + y_off),
+                lineColor='white', lineWidth=3.0, units='height')
+            circle.draw()
+            cross_a.draw()
+            cross_b.draw()
 
         prompt = visual.TextStim(
             self.win, text="Appuyez sur la barre d'espace pour continuer",
@@ -284,7 +278,7 @@ class sart(BaseTask):
             "Pratiquons cette tâche.\n\n"
             "Appuyez sur la barre d'espace pour COMMENCER"
         )
-        self._show_screen(txt, show_mask=True)
+        self._show_screen(txt, show_mask=False)
 
     def show_instructions_screen3(self):
         t = self.target_digit
@@ -617,21 +611,9 @@ class sart(BaseTask):
         if p['go_rts']:
             rts       = np.array(p['go_rts']) * 1000
             mean_rt   = float(np.mean(rts))
-            sd_rt     = float(np.std(rts, ddof=1)) if len(rts) > 1 else 0.0
-            rtcv      = sd_rt / mean_rt if mean_rt > 0 else 0.0
             median_rt = float(np.median(rts))
         else:
-            mean_rt = sd_rt = rtcv = median_rt = 0.0
-
-        hit_rate = np.clip(p['go_correct'] / total_go, 0.01, 0.99) if total_go else 0.5
-        fa_rate  = np.clip(p['nogo_commission'] / total_nogo, 0.01, 0.99) if total_nogo else 0.5
-
-        z_hit = float(norm.ppf(hit_rate))
-        z_fa  = float(norm.ppf(fa_rate))
-
-        d_prime     = z_hit - z_fa if (total_go and total_nogo) else 0.0
-        criterion_c = -0.5 * (z_hit + z_fa) if (total_go and total_nogo) else 0.0
-        beta        = float(np.exp(criterion_c * d_prime)) if d_prime != 0 else 1.0
+            mean_rt = median_rt = 0.0
 
         return {
             'total_go': total_go, 'total_nogo': total_nogo,
@@ -639,28 +621,17 @@ class sart(BaseTask):
             'nogo_correct': p['nogo_correct'], 'nogo_commission': p['nogo_commission'],
             'go_accuracy_pct': round(go_acc, 1), 'nogo_accuracy_pct': round(nogo_acc, 1),
             'mean_rt_ms': round(mean_rt, 1), 'median_rt_ms': round(median_rt, 1),
-            'sd_rt_ms': round(sd_rt, 1), 'rtcv': round(rtcv, 4),
-            'd_prime': round(d_prime, 3), 'criterion_c': round(criterion_c, 3),
-            'beta': round(beta, 3),
         }
 
     def _print_performance(self, block_name=""):
         m = self.compute_metrics()
         print(
             f"\n{'─'*55}\n  SART Performance — {block_name}\n{'─'*55}\n"
-            f"  Go  Accuracy : {m['go_accuracy_pct']:5.1f}%  "
-            f"({m['go_correct']}/{m['total_go']})\n"
-            f"  NoGo Accuracy: {m['nogo_accuracy_pct']:5.1f}%  "
-            f"({m['nogo_correct']}/{m['total_nogo']})\n"
-            f"  Commissions  : {m['nogo_commission']}\n"
-            f"  Omissions    : {m['go_omission']}\n"
-            f"  Mean RT      : {m['mean_rt_ms']:6.1f} ms\n"
-            f"  Median RT    : {m['median_rt_ms']:6.1f} ms\n"
-            f"  SD RT        : {m['sd_rt_ms']:6.1f} ms\n"
-            f"  RTCV         : {m['rtcv']:.4f}\n"
-            f"  d′           : {m['d_prime']:+.3f}\n"
-            f"  Criterion c  : {m['criterion_c']:+.3f}\n"
-            f"  Beta (β)     : {m['beta']:.3f}\n"
+            f"  GO  : {m['go_accuracy_pct']:5.1f}% corrects  "
+            f"({m['go_correct']}/{m['total_go']})  |  omissions : {m['go_omission']}\n"
+            f"  NOGO: {m['nogo_accuracy_pct']:5.1f}% corrects  "
+            f"({m['nogo_correct']}/{m['total_nogo']})  |  commissions : {m['nogo_commission']}\n"
+            f"  RT moyen : {m['mean_rt_ms']:6.1f} ms  |  RT médian : {m['median_rt_ms']:6.1f} ms\n"
             f"{'─'*55}"
         )
 
