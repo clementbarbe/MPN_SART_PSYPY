@@ -11,6 +11,21 @@ Protocole fidèle à Robertson et al. (1997) et à l'annexe McGill :
 
 Entrée  : SART_trials_McGill.xlsx
 Sortie  : McGill_SART_Raw_Data_*.xlsx  +  data/sart/qc/SART_TimingQC_*.csv
+
+Classification latencyType (conforme fichier de référence McGill) :
+    0 → aucune réponse            (latency = 1150 ms)
+    1 → RT < 100 ms               → Go Anticipatory  / NoGo Failure
+    2 → 100 ms ≤ RT < 200 ms      → Go Ambiguous     / NoGo Failure
+    3 → RT ≥ 200 ms               → Go Success       / NoGo Failure
+
+Compteurs cumulatifs (phase test uniquement, remis à zéro entre les phases) :
+    countAnticipatory     → Go avec latencyType = 1
+    correctSuppressions   → NoGo Success (pas de réponse sur NoGo)
+    incorrectSuppressions → Omission (pas de réponse sur Go)
+    countNoGo             → tous les essais NoGo rencontrés
+    countGo               → tous les essais Go rencontrés
+    countValidGo          → Go avec latencyType = 3 uniquement
+    countProbes           → toujours 0 (conforme référence)
 """
 
 import gc
@@ -51,6 +66,10 @@ SIZE_MAP = {
 
 KEY_CODE_MAP = {'space': 57}
 TOTAL_TRIAL_MS = 1150
+
+# ── Seuils RT pour la classification latencyType ──────────────────────────
+RT_ANTICIPATORY_MAX = 100   # RT < 100 ms  → type 1  (Anticipatoire)
+RT_AMBIGUOUS_MAX    = 200   # RT < 200 ms  → type 2  (Ambigu) ; sinon type 3
 
 # ── Séquence fixe d'entraînement McGill (20 essais : 18 GO + 2 NO-GO) ──
 TRAINING_SEQUENCE = [
@@ -128,9 +147,17 @@ class sart(BaseTask):
     @staticmethod
     def _empty_perf():
         return {
+            # Métriques de performance globales
             'go_correct': 0, 'go_omission': 0,
             'nogo_correct': 0, 'nogo_commission': 0,
             'go_rts': [],
+            # Compteurs cumulatifs (phase test uniquement)
+            'count_anticipatory':     0,
+            'correct_suppressions':   0,
+            'incorrect_suppressions': 0,
+            'count_nogo':             0,
+            'count_go':               0,
+            'count_valid_go':         0,
         }
 
     def _set_phase(self, phase):
@@ -231,8 +258,7 @@ class sart(BaseTask):
         stim.draw()
 
         if show_mask:
-            # Masque local pour les instructions — ne touche pas aux stimuli partagés
-            arm = self.MASK_RADIUS * 0.70
+            arm   = self.MASK_RADIUS * 0.70
             y_off = -0.10
             circle = visual.Circle(
                 self.win, radius=self.MASK_RADIUS, edges=64,
@@ -378,7 +404,7 @@ class sart(BaseTask):
         return trials
 
     # =================================================================
-    # CORE TRIAL — FIX RT : utiliser tDown (absolu) au lieu de rt (relatif)
+    # CORE TRIAL
     # =================================================================
     def run_trial(self, trial_index, total_trials, trial_info,
                   feedback=False, phase='test'):
@@ -399,7 +425,7 @@ class sart(BaseTask):
 
         self.flush_keyboard()
 
-        # ── PHASE 1 — DIGIT (250 ms) ──────────────────────────
+        # ── PHASE 1 — DIGIT (250 ms) ──────────────────────────────────────
         self._draw_digit(digit, font_size)
         t_digit_onset = self.win.flip()
 
@@ -414,11 +440,11 @@ class sart(BaseTask):
             self._draw_digit(digit, font_size)
             self.win.flip()
 
-        # ── PHASE 2 — MASK (900 ms) ───────────────────────────
+        # ── PHASE 2 — MASK (900 ms) ───────────────────────────────────────
         self._draw_mask()
         t_mask_onset = self.win.flip()
 
-        for frame_i in range(self.mask_n_frames - 1):
+        for _ in range(self.mask_n_frames - 1):
             if not responded:
                 keys = self.get_keys([self.response_key])
                 if keys:
@@ -427,38 +453,32 @@ class sart(BaseTask):
                     response_rt  = keys[0].tDown - t_digit_onset
                     responded_in = 'mask'
             self._draw_mask()
-            # ╔══════════════════════════════════════════════════╗
-            # ║  Capturer le timestamp du DERNIER flip du mask   ║
-            # ║  pour mesurer la vraie durée du masque           ║
-            # ╚══════════════════════════════════════════════════╝
             t_last_flip = self.win.flip()
 
-        # Le dernier flip du mask = moment réel où le masque disparaît
-        # (le prochain trial dessinera par-dessus au flip suivant)
         t_mask_offset = t_last_flip
 
-        # ── QC TIMING — MESURES RÉELLES ────────────────────────
-        actual_digit_ms = (t_mask_onset - t_digit_onset) * 1000
-        actual_mask_ms  = (t_mask_offset - t_mask_onset) * 1000
+        # ── QC TIMING — enregistrement séparé (ne va pas dans l'Excel) ────
+        actual_digit_ms = (t_mask_onset  - t_digit_onset) * 1000
+        actual_mask_ms  = (t_mask_offset - t_mask_onset)  * 1000
         actual_total_ms = (t_mask_offset - t_digit_onset) * 1000
 
         timing_record = {
-            'trial':            trial_index,
-            'phase':            phase,
-            'digit':            digit,
-            'condition':        condition,
-            'digit_onset':      round(t_digit_onset, 6),
-            'mask_onset':       round(t_mask_onset, 6),
-            'mask_offset':      round(t_mask_offset, 6),
-            'actual_digit_ms':  round(actual_digit_ms, 2),
-            'actual_mask_ms':   round(actual_mask_ms, 2),
-            'actual_total_ms':  round(actual_total_ms, 2),
+            'trial':             trial_index,
+            'phase':             phase,
+            'digit':             digit,
+            'condition':         condition,
+            'digit_onset':       round(t_digit_onset,  6),
+            'mask_onset':        round(t_mask_onset,   6),
+            'mask_offset':       round(t_mask_offset,  6),
+            'actual_digit_ms':   round(actual_digit_ms, 2),
+            'actual_mask_ms':    round(actual_mask_ms,  2),
+            'actual_total_ms':   round(actual_total_ms, 2),
             'expected_digit_ms': 250.0,
             'expected_mask_ms':  900.0,
             'expected_total_ms': 1150.0,
-            'digit_error_ms':   round(actual_digit_ms - 250.0, 2),
-            'mask_error_ms':    round(actual_mask_ms - 900.0, 2),
-            'total_error_ms':   round(actual_total_ms - 1150.0, 2),
+            'digit_error_ms':    round(actual_digit_ms - 250.0,  2),
+            'mask_error_ms':     round(actual_mask_ms  - 900.0,  2),
+            'total_error_ms':    round(actual_total_ms - 1150.0, 2),
         }
         self.timing_log.append(timing_record)
 
@@ -474,60 +494,102 @@ class sart(BaseTask):
                 f"(err={timing_record['mask_error_ms']:+.1f}ms)"
             )
 
-        # ── CLASSIFICATION ──────────────────────────────────────
-        if is_nogo:
-            if responded:
-                accuracy = 'Commission Error'
-                corr = 0
-                self.perf['nogo_commission'] += 1
-            else:
-                accuracy = 'No-Go Success'
-                corr = 1
-                self.perf['nogo_correct'] += 1
-        else:
-            if responded:
-                accuracy = 'Go Success'
-                corr = 1
-                self.perf['go_correct'] += 1
-                self.perf['go_rts'].append(response_rt)
-            else:
-                accuracy = 'Omission'
-                corr = 0
-                self.perf['go_omission'] += 1
-
+        # ── RT ET LATENCYTYPE ─────────────────────────────────────────────
+        #
+        #   Type 0 → aucune réponse          (latency = 1150 ms)
+        #   Type 1 → RT < 100 ms             Go Anticipatory / NoGo Failure
+        #   Type 2 → 100 ms ≤ RT < 200 ms    Go Ambiguous    / NoGo Failure
+        #   Type 3 → RT ≥ 200 ms             Go Success      / NoGo Failure
+        #
         if responded:
             response_code = self._key_to_code(response_key)
             rt_ms         = round(response_rt * 1000)
             latency       = rt_ms
-            latency_type  = 1 if responded_in == 'digit' else 3
+            if rt_ms < RT_ANTICIPATORY_MAX:      # RT < 100 ms
+                latency_type = 1
+            elif rt_ms < RT_AMBIGUOUS_MAX:       # 100 ≤ RT < 200 ms
+                latency_type = 2
+            else:                                # RT ≥ 200 ms
+                latency_type = 3
         else:
             response_code = 0
             rt_ms         = ''
             latency       = TOTAL_TRIAL_MS
             latency_type  = 0
 
-        # ── Validation RT ──────────────────────────────────────
-        if responded and (rt_ms < 0 or rt_ms > TOTAL_TRIAL_MS + 100):
+        # ── CLASSIFICATION ────────────────────────────────────────────────
+        if is_nogo:
+            if responded:
+                accuracy = 'NoGo Failure'
+                corr     = 0
+                self.perf['nogo_commission'] += 1
+            else:
+                accuracy = 'NoGo Success'
+                corr     = 1
+                self.perf['nogo_correct'] += 1
+        else:
+            if responded:
+                if latency_type == 1:
+                    accuracy = 'Go Anticipatory'
+                elif latency_type == 2:
+                    accuracy = 'Go Ambiguous'
+                else:
+                    accuracy = 'Go Success'
+                corr = 1
+                self.perf['go_correct'] += 1
+                self.perf['go_rts'].append(response_rt)
+            else:
+                accuracy = 'Omission'
+                corr     = 0
+                self.perf['go_omission'] += 1
+
+        # ── COMPTEURS CUMULATIFS — phase test uniquement ──────────────────
+        #
+        #   countGo        : tout essai Go rencontré
+        #   countNoGo      : tout essai NoGo rencontré
+        #   countAnticipatory   : Go répondu avec latencyType = 1
+        #   incorrectSuppressions: Go sans réponse (Omission)
+        #   countValidGo   : Go répondu avec latencyType = 3 seulement
+        #   correctSuppressions : NoGo sans réponse (NoGo Success)
+        #
+        if phase == 'test':
+            if not is_nogo:
+                self.perf['count_go'] += 1
+                if latency_type == 1:          # Anticipatoire
+                    self.perf['count_anticipatory'] += 1
+                elif latency_type == 0:        # Omission (pas de réponse sur Go)
+                    self.perf['incorrect_suppressions'] += 1
+                elif latency_type == 3:        # Réponse normale
+                    self.perf['count_valid_go'] += 1
+                # latency_type == 2 (Ambigu) → countGo++ uniquement
+            else:
+                self.perf['count_nogo'] += 1
+                if not responded:              # Inhibition réussie
+                    self.perf['correct_suppressions'] += 1
+
+        # ── Validation RT ─────────────────────────────────────────────────
+        if responded and isinstance(rt_ms, int) and \
+                (rt_ms < 0 or rt_ms > TOTAL_TRIAL_MS + 100):
             self.logger.warn(
                 f"[SART] ⚠️ RT aberrant trial {trial_index}: {rt_ms}ms "
-                f"(tDown={keys[0].tDown:.6f}, onset={t_digit_onset:.6f})"
+                f"(onset={t_digit_onset:.6f})"
             )
 
-        # ── FEEDBACK (training) ────────────────────────────────
+        # ── FEEDBACK (entraînement uniquement) ────────────────────────────
         if feedback:
             if corr == 1:
                 self.fb_symbol.text, self.fb_symbol.color = '✓', 'green'
-                if accuracy == 'Go Success':
+                if accuracy in ('Go Success', 'Go Ambiguous', 'Go Anticipatory'):
                     self.fb_msg.text = f"Correct ! RT : {rt_ms} ms"
-                else:
+                else:                            # 'NoGo Success'
                     self.fb_msg.text = "Correct ! Bonne inhibition ✓"
             else:
                 self.fb_symbol.text, self.fb_symbol.color = '✗', 'red'
-                if accuracy == 'Commission Error':
+                if accuracy == 'NoGo Failure':
                     self.fb_msg.text = (
                         f"Erreur — ne PAS appuyer pour le {self.target_digit}"
                     )
-                else:
+                else:                            # 'Omission'
                     self.fb_msg.text = "Erreur — appuyez pour les autres chiffres"
 
             self.fb_symbol.draw()
@@ -535,7 +597,15 @@ class sart(BaseTask):
             self.win.flip()
             core.wait(self.feedback_dur)
 
-        # ── ENREGISTREMENT ────────────────────────────────────
+        # ── ENREGISTREMENT ────────────────────────────────────────────────
+        # Lecture des compteurs cumulatifs (0 pour la phase training)
+        cnt_ant  = self.perf['count_anticipatory']      if phase == 'test' else 0
+        cnt_cs   = self.perf['correct_suppressions']    if phase == 'test' else 0
+        cnt_is   = self.perf['incorrect_suppressions']  if phase == 'test' else 0
+        cnt_nogo = self.perf['count_nogo']              if phase == 'test' else 0
+        cnt_go   = self.perf['count_go']                if phase == 'test' else 0
+        cnt_vgo  = self.perf['count_valid_go']          if phase == 'test' else 0
+
         record = {
             'phase':                   phase,
             'trialCount':              trial_index - 1,
@@ -550,18 +620,12 @@ class sart(BaseTask):
             'latency':                 latency,
             'latencyType':             latency_type,
             'responseType':            accuracy,
-            'actual_digit_ms':         timing_record['actual_digit_ms'],
-            'actual_mask_ms':          timing_record['actual_mask_ms'],
-            'actual_total_ms':         timing_record['actual_total_ms'],
-            'digit_error_ms':          timing_record['digit_error_ms'],
-            'mask_error_ms':           timing_record['mask_error_ms'],
-            'total_error_ms':          timing_record['total_error_ms'],
-            'countAnticipatory':       0,
-            'correctSuppressions':     0,
-            'incorrectSuppressions':   0,
-            'countNoGo':               0,
-            'countGo':                 0,
-            'countValidGo':            0,
+            'countAnticipatory':       cnt_ant,
+            'correctSuppressions':     cnt_cs,
+            'incorrectSuppressions':   cnt_is,
+            'countNoGo':               cnt_nogo,
+            'countGo':                 cnt_go,
+            'countValidGo':            cnt_vgo,
             'countProbes':             0,
             'radioButtons.difficulty.response': '',
             'radioButtons.interest.response':   '',
@@ -605,7 +669,7 @@ class sart(BaseTask):
         total_go   = p['go_correct'] + p['go_omission']
         total_nogo = p['nogo_correct'] + p['nogo_commission']
 
-        go_acc   = (p['go_correct'] / total_go * 100) if total_go else 0
+        go_acc   = (p['go_correct'] / total_go   * 100) if total_go   else 0
         nogo_acc = (p['nogo_correct'] / total_nogo * 100) if total_nogo else 0
 
         if p['go_rts']:
@@ -636,10 +700,14 @@ class sart(BaseTask):
         )
 
     # =================================================================
-    # SAVE — Excel obligatoire, training & test sur 2 feuilles
+    # SAVE — Excel McGill (colonnes QC timing exclues)
     # =================================================================
     def save_data(self, **kwargs):
-        """Sauvegarde en Excel avec feuilles séparées Training / Test."""
+        """Sauvegarde en Excel avec feuilles séparées Training / Test.
+
+        Les colonnes de QC timing (actual_digit_ms, digit_error_ms, etc.)
+        sont stockées uniquement dans le fichier QC séparé, pas ici.
+        """
         has_training = len(self.training_data) > 0
         has_test     = len(self.test_data) > 0
 
@@ -654,11 +722,12 @@ class sart(BaseTask):
         )
         filepath = os.path.join(self.data_dir, filename)
 
+        # Colonnes dans l'ordre exact du fichier de référence McGill
+        # (les colonnes QC timing ne sont PAS incluses ici)
         col_order = [
             'phase', 'trialCount', 'digitPresentationTime', 'maskPresentationTime',
             'trialType', 'digit', 'fontSize', 'response', 'correct', 'rt',
             'latency', 'latencyType', 'responseType',
-            'actual_digit_ms', 'actual_mask_ms', 'digit_error_ms', 'mask_error_ms',
             'countAnticipatory', 'correctSuppressions', 'incorrectSuppressions',
             'countNoGo', 'countGo', 'countValidGo', 'countProbes',
             'radioButtons.difficulty.response', 'radioButtons.interest.response',
@@ -694,7 +763,6 @@ class sart(BaseTask):
 
         except Exception as e:
             self.logger.warn(f"[SART] Erreur sauvegarde Excel : {e}")
-            # Fallback : CSV d'urgence
             csv_path = filepath.replace('.xlsx', '_EMERGENCY.csv')
             all_data = self.training_data + self.test_data
             pd.DataFrame(all_data).to_csv(csv_path, index=False)
@@ -721,11 +789,10 @@ class sart(BaseTask):
                 f"do_training={do_training} | do_test={do_test}"
             )
 
-            # ── TRAINING ──────────────────────────────────────
+            # ── TRAINING ──────────────────────────────────────────────────
             if do_training:
                 self.show_instructions_screen2()
 
-                # Basculer vers stockage training
                 self._set_phase('training')
                 self.perf = self._empty_perf()
                 self.task_clock.reset()
@@ -736,14 +803,13 @@ class sart(BaseTask):
                     feedback=True, phase='training'
                 )
 
-            # ── TEST ──────────────────────────────────────────
+            # ── TEST ──────────────────────────────────────────────────────
             if do_test:
                 if do_training:
                     self.show_instructions_screen3()
                 else:
                     self.show_instructions_screen2()
 
-                # Basculer vers stockage test + reset perf
                 self._set_phase('test')
                 self.perf = self._empty_perf()
                 self.task_clock.reset()
@@ -770,7 +836,7 @@ class sart(BaseTask):
             filepath = self.save_data()
             self._print_performance("FINAL")
 
-            # ── QC : uniquement sur les données TEST ──────────
+            # ── QC : uniquement sur les données TEST ──────────────────────
             qc_timing = self.test_timing if self.test_timing else self.training_timing
             qc_label  = 'test' if self.test_timing else 'training'
 
@@ -790,7 +856,7 @@ class sart(BaseTask):
                 self.logger.log(
                     f"[SART] QC sur phase '{qc_label}' ({len(qc_timing)} essais)"
                 )
-                qc.run_qc()
+                qc.print_report()
             except Exception as e:
                 self.logger.warn(f"[SART] QC timing échoué : {e}")
                 import traceback

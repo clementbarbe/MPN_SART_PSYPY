@@ -1,0 +1,21 @@
+correct,correctSuppressions,countAnticipatory,countGo,countNoGo,countProbes,countValidGo,digit,digitPresentationTime,fontSize,incorrectSuppressions,latency,latencyType,maskPresentationTime,phase,radioButtons.difficulty.response,radioButtons.interest.response,response,responseType,rt,trialCount,trialType
+1,0,0,0,0,0,0,1,250,10pct,0,873,3,900,training,,,57,Go Success,873,0,Go
+1,0,0,0,0,0,0,5,250,4pct,0,478,3,900,training,,,57,Go Success,478,1,Go
+1,0,0,0,0,0,0,7,250,16pct,0,328,3,900,training,,,57,Go Success,328,2,Go
+1,0,0,0,0,0,0,9,250,2pct,0,169,2,900,training,,,57,Go Ambiguous,169,3,Go
+1,0,0,0,0,0,0,2,250,10pct,0,146,2,900,training,,,57,Go Ambiguous,146,4,Go
+1,0,0,0,0,0,0,6,250,4pct,0,306,3,900,training,,,57,Go Success,306,5,Go
+1,0,0,0,0,0,0,8,250,16pct,0,179,2,900,training,,,57,Go Ambiguous,179,6,Go
+1,0,0,0,0,0,0,4,250,2pct,0,374,3,900,training,,,57,Go Success,374,7,Go
+1,0,0,0,0,0,0,1,250,4pct,0,247,3,900,training,,,57,Go Success,247,8,Go
+0,0,0,0,0,0,0,3,250,10pct,0,344,3,900,training,,,57,NoGo Failure,344,9,No-Go
+1,0,0,0,0,0,0,7,250,16pct,0,497,3,900,training,,,57,Go Success,497,10,Go
+1,0,0,0,0,0,0,9,250,2pct,0,418,3,900,training,,,57,Go Success,418,11,Go
+1,0,0,0,0,0,0,5,250,10pct,0,402,3,900,training,,,57,Go Success,402,12,Go
+1,0,0,0,0,0,0,2,250,4pct,0,212,3,900,training,,,57,Go Success,212,13,Go
+1,0,0,0,0,0,0,8,250,16pct,0,342,3,900,training,,,57,Go Success,342,14,Go
+1,0,0,0,0,0,0,6,250,2pct,0,367,3,900,training,,,57,Go Success,367,15,Go
+0,0,0,0,0,0,0,3,250,4pct,0,311,3,900,training,,,57,NoGo Failure,311,16,No-Go
+1,0,0,0,0,0,0,4,250,10pct,0,410,3,900,training,,,57,Go Success,410,17,Go
+1,0,0,0,0,0,0,1,250,16pct,0,484,3,900,training,,,57,Go Success,484,18,Go
+1,0,0,0,0,0,0,9,250,4pct,0,275,3,900,training,,,57,Go Success,275,19,Go

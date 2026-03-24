@@ -25,11 +25,24 @@ class SartTab(QWidget):
         training_group.setLayout(training_layout)
         layout.addWidget(training_group)
 
-        # ── CLASSIC (McGill) ────────────────────────────────────
-        classic_group = QGroupBox("Classic (McGill — 225 essais)")
+        # ── TEST ────────────────────────────────────
+        classic_group = QGroupBox("TEST")
         classic_layout = QVBoxLayout()
 
-        btn_classic = QPushButton("Lancer Classic")
+        btn_classic = QPushButton("Lancer Test")
+        btn_classic.clicked.connect(self.run_classic)
+        classic_layout.addWidget(btn_classic)
+
+        classic_group.setLayout(classic_layout)
+        layout.addWidget(classic_group)
+
+        layout.addStretch()
+
+        # ── TRAINING + TEST ────────────────────────────────────
+        classic_group = QGroupBox("TRAINING + TEST)")
+        classic_layout = QVBoxLayout()
+
+        btn_classic = QPushButton("Lancer Full")
         btn_classic.clicked.connect(self.run_classic)
         classic_layout.addWidget(btn_classic)
 
@@ -60,5 +73,12 @@ class SartTab(QWidget):
         params = self.get_common()
         params.update({
             'run_type': 'classic',
+        })
+        self.parent_menu.run_experiment(params)
+        
+    def run_full(self):
+        params = self.get_common()
+        params.update({
+            'run_type': 'full',
         })
         self.parent_menu.run_experiment(params)
