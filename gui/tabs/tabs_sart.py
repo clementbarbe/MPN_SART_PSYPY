@@ -15,7 +15,7 @@ class SartTab(QWidget):
         self.setLayout(layout)
 
         # ── TRAINING ────────────────────────────────────────────
-        training_group = QGroupBox("Training")
+        training_group = QGroupBox("Training (18 Trials)")
         training_layout = QVBoxLayout()
 
         btn_training = QPushButton("Lancer Training")
@@ -26,7 +26,7 @@ class SartTab(QWidget):
         layout.addWidget(training_group)
 
         # ── TEST ────────────────────────────────────
-        classic_group = QGroupBox("TEST")
+        classic_group = QGroupBox("Test (225 Trials)")
         classic_layout = QVBoxLayout()
 
         btn_classic = QPushButton("Lancer Test")
@@ -36,10 +36,8 @@ class SartTab(QWidget):
         classic_group.setLayout(classic_layout)
         layout.addWidget(classic_group)
 
-        layout.addStretch()
-
         # ── TRAINING + TEST ────────────────────────────────────
-        classic_group = QGroupBox("TRAINING + TEST)")
+        classic_group = QGroupBox("Training (18 Trials) + Test (225 Trials)")
         classic_layout = QVBoxLayout()
 
         btn_classic = QPushButton("Lancer Full")
@@ -65,20 +63,20 @@ class SartTab(QWidget):
     def run_training(self):
         params = self.get_common()
         params.update({
-            'run_type':          'training',
+            'run_type':     'training',
         })
         self.parent_menu.run_experiment(params)
 
     def run_classic(self):
         params = self.get_common()
         params.update({
-            'run_type': 'test',
+            'run_type':     'test',
         })
         self.parent_menu.run_experiment(params)
         
     def run_full(self):
         params = self.get_common()
         params.update({
-            'run_type': 'full',
+            'run_type':     'full',
         })
         self.parent_menu.run_experiment(params)
