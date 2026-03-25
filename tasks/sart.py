@@ -824,12 +824,11 @@ class sart(BaseTask):
         """
         Séquences selon le mode :
 
-        full          : screen1 → screen2 → fixation(2s) → training(18)
-                        → screen3 → fixation(2s) → test(225)
+        full          : screen1 → screen2 → training(18) → screen3 → test(225)
 
-        training_only : screen1 → screen2 → fixation(2s) → training(18)
+        training_only : screen1 → screen2 → training(18)
 
-        test_only     : screen1 → screen2 → fixation(2s) → test(225)
+        test_only     : screen1 → screen2 → test(225)
         """
         filepath = None
         aborted  = False
@@ -845,14 +844,14 @@ class sart(BaseTask):
 
             # ══════════════════════════════════════════════════════════════
             # MODE FULL
-            # screen2 → fixation(2s) → training(18)
-            # screen3 → fixation(2s) → test(225)
+            # screen2 → training(18)
+            # screen3 → test(225)
             # ══════════════════════════════════════════════════════════════
             if self.mode == 'full':
 
                 # ── Entraînement ──────────────────────────────────────────
                 self.show_instructions_screen2()
-                self._show_fixation_cross()                  # ← 2 s
+                self._show_fixation_cross()              
                 self._set_phase('training')
                 self.perf = self._empty_perf()
                 self.task_clock.reset()
@@ -865,7 +864,7 @@ class sart(BaseTask):
 
                 # ── Test ──────────────────────────────────────────────────
                 self.show_instructions_screen3()
-                self._show_fixation_cross()                  # ← 2 s
+                self._show_fixation_cross()              
                 self._set_phase('test')
                 self.perf = self._empty_perf()
                 self.task_clock.reset()
@@ -878,12 +877,12 @@ class sart(BaseTask):
 
             # ══════════════════════════════════════════════════════════════
             # MODE TRAINING ONLY
-            # screen2 → fixation(2s) → training(18)
+            # screen2 → training(18)
             # ══════════════════════════════════════════════════════════════
             elif self.mode == 'training_only':
 
                 self.show_instructions_screen2()
-                self._show_fixation_cross()                  # ← 2 s
+                self._show_fixation_cross()            
                 self._set_phase('training')
                 self.perf = self._empty_perf()
                 self.task_clock.reset()
@@ -896,12 +895,12 @@ class sart(BaseTask):
 
             # ══════════════════════════════════════════════════════════════
             # MODE TEST ONLY
-            # screen2 → fixation(2s) → test(225)
+            # screen2 → test(225)
             # ══════════════════════════════════════════════════════════════
             elif self.mode == 'test_only':
 
                 self.show_instructions_screen2()
-                self._show_fixation_cross()                  # ← 2 s
+                self._show_fixation_cross()                 
                 self._set_phase('test')
                 self.perf = self._empty_perf()
                 self.task_clock.reset()
