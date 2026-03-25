@@ -1,10 +1,10 @@
 @echo off
 
 REM Activation de l’environnement conda via Miniforge
-call "C:\ProgramData\miniforge3\Scripts\conda.bat" activate Psychopy_template
+call "conda.bat" activate Sart
 
 REM Aller dans le dossier du projet
-cd /d "E:\protocols\Psychopy_template"
+cd /d "MPN_SART_PSYPY"
 
 REM Exécuter le script Python
 python main.py
