@@ -1,33 +1,45 @@
-# Sustained Attention to Response Task (SART)
+# Hand Representation Task
 
-Tâche d'attention soutenue basée sur le protocole Robertson et al. (1997) — version McGill.  
+Tâche de représentation corporelle basée sur le protocole Longo & Haggard (2010).  
 Conçue pour l'évaluation neuropsychologique comportementale — CENIR, Institut du Cerveau (ICM).
 
 ## Principe
 
-1. Une série de chiffres (1–9) apparaît au centre de l'écran
-2. Chaque chiffre est présenté **250 ms** puis immédiatement masqué **900 ms** (SOA = 1150 ms)
-3. **GO** : le participant appuie sur ESPACE pour tout chiffre sauf 3
-4. **NO-GO** : le participant inhibe sa réponse lorsque le chiffre **3** apparaît
-5. Les chiffres varient en taille (4 niveaux) pour maintenir l'engagement attentionnel
+1. Une image indiquant un doigt et une zone précise apparaît à l'écran
+2. Le participant pointe la zone indiquée **avant la fin de la barre de progression**
+3. Le participant maintient sa position **sans bouger** jusqu'à l'image suivante
+4. Une **photo** est prise automatiquement à la fin de chaque essai
+5. Les images représentent naturellement une **main gauche** — un effet miroir est
+   appliqué automatiquement pour la main droite
 
-## Modes
+## Structure
 
-| Mode | Essais | Feedback | Description |
-|------|--------|----------|-------------|
-| `full` | 20 + 225 | Entraînement seulement | Entraînement → écran de transition → tâche complète |
-| `training` | 20 | Oui | Entraînement seul (18 GO + 2 NO-GO), ordre fixe |
-| `test` | 225 | Non | Tâche complète seule (200 GO + 25 NO-GO), ordre fixe |
+| Niveau | Quantité | Description |
+|--------|----------|-------------|
+| Block | 1 | 100 essais au total |
+| Miniblock | 10 par block | 10 essais chacun |
+| Essai | 10 par miniblock | Les 10 positions, ordre aléatoire |
+
+Les 10 positions couvrent **5 doigts × 2 zones** (proximale / distale).
 
 ## Paramètres
 
 | Paramètre | Défaut | Description |
 |-----------|--------|-------------|
-| `mode` | `full` | Mode de passation |
-| `target_digit` | `3` | Chiffre cible (NO-GO) |
-| `response_key` | `space` | Touche de réponse |
-| `training_feedback` | `True` | Feedback visuel pendant l'entraînement |
+| `hand` | `droite` | Main testée — `droite` ou `gauche` |
+| `n_blocks` | `1` | Nombre de blocks |
+| `trial_duration` | `7.0` | Durée de la barre de progression (secondes) |
+| `camera_index` | `0` | Index OpenCV de la webcam |
 | `session` | `01` | Numéro de session |
+
+## Effet miroir
+
+Les images source représentent une main gauche.
+
+| `hand` | Affichage |
+|--------|-----------|
+| `gauche` | Image telle quelle |
+| `droite` | Image retournée horizontalement |
 
 ## Lancement
 
@@ -35,35 +47,39 @@ Prérequis
 
     Python 3.10+
     PsychoPy 2025.1.1
-    openpyxl
-    numpy / pandas
+    opencv-python (cv2)
 
-Fichier de séquence test requis : `SART_trials_McGill.xlsx`  
-(colonnes : `trial`, `digit`, `isnogo`, `size`)
+Images requises dans `images/` : `a1.png` … `a10.png`  
+(5 doigts × 2 zones, main gauche, fond neutre)
 
 ## Données
 
-Les résultats sont sauvegardés dans `data/sart/` :
+Les résultats sont sauvegardés dans `data/hand_representation/` :
 
-    McGill_SART_Raw_Data_*_{mode}_{timestamp}.xlsx — fichier final (feuilles Training / Test / All_Trials)
-    *_incremental.csv — backup trial par trial (protection anti-crash)
-    qc/SART_TimingQC_*_{timestamp}.csv — rapport de qualité temporelle
+    *_final.csv              — fichier récapitulatif complet (fin de session)
+    *_incremental.csv        — backup essai par essai (protection anti-crash)
+    photos/                  — photos webcam au format JPEG
 
 ### Métriques enregistrées
 
-- Type de réponse : `Go Success`, `Go Ambiguous`, `Go Anticipatory`, `NoGo Success`, `NoGo Failure`, `Omission`
-- RT et latence (ms), type de latence (0–3)
-- Compteurs cumulatifs : `countGo`, `countNoGo`, `countValidGo`, `countAnticipatory`, `correctSuppressions`, `incorrectSuppressions`
+- Identifiants : `participant`, `session`, `hand`, `flip_horiz`
+- Position : `finger`, `zone`, `position_label`, `image_file`
+- Temporel : `image_onset`, `capture_time_task`, `trial_duration`, `wall_timestamp`
+- Arborescence : `block_number`, `miniblock_number`, `trial_in_miniblock`, `trial_in_block`
+- Photo : `photo_filename`, `photo_path`
 
-## Contrôle qualité timing
+### Nomenclature des photos
 
-Un rapport QC est généré automatiquement après chaque session (≥ 25 essais requis).  
-Le verdict porte sur la stabilité du digit (250 ms) et du masque (900 ms) uniquement :
+    {participant}_{hand}_B{block}_M{miniblock}_T{trial}_{finger}_z{zone}_{timestamp}.jpg
 
-    PASS  : <2%  des essais dépassent le seuil d'erreur (±2.5 frames)
-    WARN  : 2–10% des essais dépassent le seuil d'erreur
-    FAIL  : >10% des essais dépassent le seuil d'erreur
-    N/A   : échantillon insuffisant (< 25 essais)
+    ex : SUJ01_droite_B01_M03_T027_index_z2_20250612_143201_000123.jpg
+
+## Référence
+
+> Longo, M. R., & Haggard, P. (2010).  
+> **An implicit body representation underlying human position sense.**  
+> *Proceedings of the National Academy of Sciences*, 107(26), 11727–11732.  
+> https://doi.org/10.1073/pnas.1003483107
 
 ## Auteur
 
