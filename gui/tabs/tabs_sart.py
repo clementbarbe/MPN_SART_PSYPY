@@ -43,7 +43,7 @@ class SartTab(QWidget):
         classic_layout = QVBoxLayout()
 
         btn_classic = QPushButton("Lancer Full")
-        btn_classic.clicked.connect(self.run_classic)
+        btn_classic.clicked.connect(self.run_full)
         classic_layout.addWidget(btn_classic)
 
         classic_group.setLayout(classic_layout)
@@ -72,7 +72,7 @@ class SartTab(QWidget):
     def run_classic(self):
         params = self.get_common()
         params.update({
-            'run_type': 'classic',
+            'run_type': 'test',
         })
         self.parent_menu.run_experiment(params)
         

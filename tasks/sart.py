@@ -1,31 +1,26 @@
 """
 sart.py — Sustained Attention to Response Task (McGill Protocol)
 ================================================================
-Protocole fidèle à Robertson et al. (1997) et à l'annexe McGill :
-    • 20 essais d'entraînement (18 GO + 2 NO-GO), ordre fixe, avec feedback
-    • 225 essais test (200 GO + 25 NO-GO), ordre fixe (Excel), sans feedback
-    • Digit 250 ms → Mask 900 ms → digit suivant immédiat (SOA = 1150 ms, PAS d'ISI)
-    • 4 tailles de police (tiny, small, medium, large)
-    • 3 écrans d'instructions (FR) avec visuel du masque
-    • Métriques live : GO/NOGO accuracy, commissions, omissions, RT moyen/médian
+Modes disponibles (paramètre 'mode') :
+    'full'      → screen1 → screen2 → fixation(2 s) → 18 essais training → screen3 → fixation(2 s) → 225 essais test
+    'training'  → screen1 → screen2 → fixation(2 s) → 18 essais training
+    'test'      → screen1 → screen2 → fixation(2 s) → 225 essais test
+
+Paramètre 'training_feedback' (bool, défaut True) :
+    True  → feedback visuel après chaque essai d'entraînement
+    False → entraînement silencieux
+
+Classification latencyType :
+    0 → aucune réponse (latency = 1150 ms)
+    1 → RT < 100 ms   → Go Anticipatory  / NoGo Failure
+    2 → 100 ≤ RT < 200 ms → Go Ambiguous / NoGo Failure
+    3 → RT ≥ 200 ms   → Go Success       / NoGo Failure
 
 Entrée  : SART_trials_McGill.xlsx
-Sortie  : McGill_SART_Raw_Data_*.xlsx  +  data/sart/qc/SART_TimingQC_*.csv
-
-Classification latencyType (conforme fichier de référence McGill) :
-    0 → aucune réponse            (latency = 1150 ms)
-    1 → RT < 100 ms               → Go Anticipatory  / NoGo Failure
-    2 → 100 ms ≤ RT < 200 ms      → Go Ambiguous     / NoGo Failure
-    3 → RT ≥ 200 ms               → Go Success       / NoGo Failure
-
-Compteurs cumulatifs (phase test uniquement, remis à zéro entre les phases) :
-    countAnticipatory     → Go avec latencyType = 1
-    correctSuppressions   → NoGo Success (pas de réponse sur NoGo)
-    incorrectSuppressions → Omission (pas de réponse sur Go)
-    countNoGo             → tous les essais NoGo rencontrés
-    countGo               → tous les essais Go rencontrés
-    countValidGo          → Go avec latencyType = 3 uniquement
-    countProbes           → toujours 0 (conforme référence)
+          · Block='Training' → 18 essais entraînement (16 GO, 2 NO-GO)
+          · Block='Main'     → 225 essais test        (200 GO, 25 NO-GO)
+Sortie  : McGill_SART_Raw_Data_*.xlsx  (feuilles : Training / Test / All_Trials)
+          + data/sart/qc/SART_TimingQC_*.csv
 """
 
 import gc
@@ -50,46 +45,51 @@ DEFAULT_CONFIG = {
     'trial_file':         'SART_trials_McGill.xlsx',
     'data_dir':           'data/sart',
     'feedback_duration':  0.800,
+    'training_feedback':  True,
 }
 
+# 3 modes exacts — aucun alias ambigu
 MODE_ALIASES = {
-    'training':         'training_only',
-    'classic':          'test_only',
+    'full':      'full',           # entraînement + screen3 + test
+    'training':  'training_only',  # entraînement uniquement
+    'test':      'test_only',      # test uniquement
 }
 
 SIZE_MAP = {
-    'tiny':   {'pct': '2pct',  'height': 0.04},
-    'small':  {'pct': '4pct',  'height': 0.06},
-    'medium': {'pct': '10pct', 'height': 0.10},
-    'large':  {'pct': '16pct', 'height': 0.14},
+    'tiny':       {'pct': '2pct',  'height': 0.04},
+    'small':      {'pct': '4pct',  'height': 0.06},
+    'medium':     {'pct': '10pct', 'height': 0.10},
+    'large':      {'pct': '16pct', 'height': 0.14},
+    'very large': {'pct': '16pct', 'height': 0.18},
 }
 
-KEY_CODE_MAP = {'space': 57}
+KEY_CODE_MAP   = {'space': 57}
 TOTAL_TRIAL_MS = 1150
 
-# ── Seuils RT pour la classification latencyType ──────────────────────────
-RT_ANTICIPATORY_MAX = 100   # RT < 100 ms  → type 1  (Anticipatoire)
-RT_AMBIGUOUS_MAX    = 200   # RT < 200 ms  → type 2  (Ambigu) ; sinon type 3
+RT_ANTICIPATORY_MAX = 100   # RT < 100 ms  → type 1
+RT_AMBIGUOUS_MAX    = 200   # RT < 200 ms  → type 2 ; sinon type 3
 
-# ── Séquence fixe d'entraînement McGill (20 essais : 18 GO + 2 NO-GO) ──
-TRAINING_SEQUENCE = [
-    (1, 'medium'), (5, 'small'),  (7, 'large'), (9, 'tiny'),
-    (2, 'medium'), (6, 'small'),  (8, 'large'), (4, 'tiny'),
-    (1, 'small'),  (3, 'medium'),
-    (7, 'large'),  (9, 'tiny'),   (5, 'medium'), (2, 'small'),
-    (8, 'large'),  (6, 'tiny'),   (3, 'small'),
-    (4, 'medium'), (1, 'large'),  (9, 'small'),
-]
+# ── Comptages attendus par bloc (pour validation) ─────────────────────────
+TRAINING_N_TRIALS = 18
+TRAINING_N_GO     = 16
+TRAINING_N_NOGO   = 2
+TEST_N_TRIALS     = 225
+TEST_N_GO         = 200
+TEST_N_NOGO       = 25
 
 
 class sart(BaseTask):
     """Sustained Attention to Response Task — McGill Protocol."""
 
-    DIGITS           = list(range(1, 10))
-    DIGIT_DURATION_S = 0.250
-    MASK_DURATION_S  = 0.900
-    MASK_RADIUS      = 0.08
+    DIGITS              = list(range(1, 10))
+    DIGIT_DURATION_S    = 0.250
+    MASK_DURATION_S     = 0.900
+    MASK_RADIUS         = 0.08
+    FIXATION_DURATION_S = 1.0   # durée de la croix de fixation avant chaque bloc
 
+    # =================================================================
+    # INIT
+    # =================================================================
     def __init__(self, win, config=None):
         cfg = {**DEFAULT_CONFIG, **(config or {})}
 
@@ -101,34 +101,35 @@ class sart(BaseTask):
             folder_name=os.path.basename(cfg['data_dir']),
             eyetracker_actif=False,
             parport_actif=False,
-            enregistrer=True
+            enregistrer=True,
         )
 
-        # ── Normalisation du mode ──
-        raw_mode = cfg['mode'].lower().strip()
+        # ── Normalisation du mode ─────────────────────────────────────────
+        raw_mode  = cfg['mode'].lower().strip()
         self.mode = MODE_ALIASES.get(raw_mode)
         if self.mode is None:
             self.logger.warn(
                 f"[SART] Mode '{raw_mode}' non reconnu — fallback 'full'. "
-                f"Valides : {list(MODE_ALIASES.keys())}"
+                f"Valides : {sorted(MODE_ALIASES.keys())}"
             )
             self.mode = 'full'
 
-        self.target_digit = int(cfg['target_digit'])
-        self.response_key = cfg['response_key']
-        self.trial_file   = cfg['trial_file']
-        self.feedback_dur = float(cfg['feedback_duration'])
+        self.target_digit      = int(cfg['target_digit'])
+        self.response_key      = cfg['response_key']
+        self.trial_file        = cfg['trial_file']
+        self.feedback_dur      = float(cfg['feedback_duration'])
+        self.training_feedback = bool(cfg.get('training_feedback', True))
 
-        # ── Données séparées par phase ──
-        self.training_data    = []
-        self.training_timing  = []
-        self.test_data        = []
-        self.test_timing      = []
+        # Données séparées par phase
+        self.training_data   = []
+        self.training_timing = []
+        self.test_data       = []
+        self.test_timing     = []
 
-        # Pointeurs actifs (changent selon la phase)
-        self.trial_data       = self.training_data
-        self.timing_log       = self.training_timing
-        self.global_records   = []     # alias pour BaseTask._emergency_save
+        # Pointeurs actifs (basculés par _set_phase)
+        self.trial_data     = self.training_data
+        self.timing_log     = self.training_timing
+        self.global_records = []
 
         self.perf = self._empty_perf()
 
@@ -138,8 +139,11 @@ class sart(BaseTask):
         self.logger.log(
             f"[SART] Init | mode={self.mode} (raw='{raw_mode}') | "
             f"target={self.target_digit} | "
+            f"training_feedback={self.training_feedback} | "
             f"fps={self.frame_rate:.1f} | frame={self.frame_dur_s*1000:.2f}ms"
         )
+
+        self.doqc = False
 
     # =================================================================
     # HELPERS
@@ -147,11 +151,9 @@ class sart(BaseTask):
     @staticmethod
     def _empty_perf():
         return {
-            # Métriques de performance globales
             'go_correct': 0, 'go_omission': 0,
             'nogo_correct': 0, 'nogo_commission': 0,
             'go_rts': [],
-            # Compteurs cumulatifs (phase test uniquement)
             'count_anticipatory':     0,
             'correct_suppressions':   0,
             'incorrect_suppressions': 0,
@@ -169,16 +171,13 @@ class sart(BaseTask):
             self.trial_data = self.test_data
             self.timing_log = self.test_timing
         else:
-            raise ValueError(f"Phase inconnue : {phase}")
-
-        # Mise à jour de l'alias pour emergency save
+            raise ValueError(f"[SART] Phase inconnue : {phase}")
         self.global_records = self.trial_data
-
         self.logger.log(f"[SART] Phase → {phase}")
 
     @staticmethod
     def _size_text_to_info(size_text):
-        key = str(size_text).strip().lower()
+        key  = str(size_text).strip().lower()
         info = SIZE_MAP.get(key)
         if info:
             return info['pct'], info['height']
@@ -196,15 +195,17 @@ class sart(BaseTask):
 
     def _measure_frame_rate(self):
         measured = self.win.getActualFrameRate(nIdentical=10, nMaxFrames=100, threshold=1)
-        self.frame_rate    = measured if measured else 60.0
-        self.frame_dur_s   = 1.0 / self.frame_rate
-        self.digit_n_frames = max(1, round(self.DIGIT_DURATION_S / self.frame_dur_s))
-        self.mask_n_frames  = max(1, round(self.MASK_DURATION_S / self.frame_dur_s))
+        self.frame_rate        = measured if measured else 60.0
+        self.frame_dur_s       = 1.0 / self.frame_rate
+        self.digit_n_frames    = max(1, round(self.DIGIT_DURATION_S    / self.frame_dur_s))
+        self.mask_n_frames     = max(1, round(self.MASK_DURATION_S     / self.frame_dur_s))
+        self.fixation_n_frames = max(1, round(self.FIXATION_DURATION_S / self.frame_dur_s))
         self.logger.log(
             f"[SART] Digit={self.digit_n_frames}f "
             f"({self.digit_n_frames * self.frame_dur_s * 1000:.1f}ms) | "
             f"Mask={self.mask_n_frames}f "
-            f"({self.mask_n_frames * self.frame_dur_s * 1000:.1f}ms)"
+            f"({self.mask_n_frames * self.frame_dur_s * 1000:.1f}ms) | "
+            f"Fixation={self.fixation_n_frames}f ({self.FIXATION_DURATION_S*1000:.0f}ms)"
         )
 
     # =================================================================
@@ -245,6 +246,32 @@ class sart(BaseTask):
         self.mask_circle.draw()
         self.mask_cross_a.draw()
         self.mask_cross_b.draw()
+
+    # =================================================================
+    # FIXATION CROSS
+    # =================================================================
+    def _show_fixation_cross(self, duration=None):
+        """Affiche le masque SART (cercle + croix diagonale) pendant `duration` secondes.
+
+        Rendu frame-accurate. Le clavier est purgé en début de fonction afin
+        d'éviter qu'un appui espace (écran d'instruction précédent) ne
+        contamine le premier essai.
+        Après la boucle, le back-buffer est propre : le premier flip de
+        run_trial affiche directement le chiffre sans frame blanche parasite.
+        """
+        if duration is None:
+            duration = self.FIXATION_DURATION_S
+
+        self.flush_keyboard()
+        n_frames = max(1, round(duration / self.frame_dur_s))
+
+        self.logger.log(
+            f"[SART] Masque-fixation début — {duration:.1f} s ({n_frames} frames)"
+        )
+        for _ in range(n_frames):
+            self._draw_mask()          
+            self.win.flip()
+        self.logger.log("[SART] Masque-fixation fin")
 
     # =================================================================
     # INSTRUCTION SCREENS
@@ -324,19 +351,27 @@ class sart(BaseTask):
         self._show_screen(txt, show_mask=False)
 
     # =================================================================
-    # TRIAL LOADING
+    # TRIAL LOADING — depuis Excel, filtré par colonne 'Block'
     # =================================================================
-    def load_trials_from_excel(self):
-        filepath = self.trial_file
-        if not os.path.isfile(filepath):
-            raise FileNotFoundError(f"[SART] Fichier introuvable : {filepath}")
+    def _parse_trials_from_df(self, df, block_label=''):
+        """Parse un DataFrame pré-filtré en liste de dicts d'essai.
 
-        df = pd.read_excel(filepath)
-        df.columns = [c.strip().lower() for c in df.columns]
-
+        Retourne (trials, n_go, n_nogo).
+        Les lignes avec un digit invalide sont ignorées avec un warning
+        (ex. : ligne 67 du bloc Main qui a TrialType vide mais IsNoGo=0).
+        """
         trials = []
         for _, row in df.iterrows():
-            digit    = int(row['digit'])
+            # ── Digit ─────────────────────────────────────────────────────
+            try:
+                digit = int(row['digit'])
+            except (ValueError, TypeError):
+                self.logger.warn(
+                    f"[SART] {block_label} — ligne ignorée, digit invalide : "
+                    f"{row.get('digit')!r}"
+                )
+                continue
+
             is_nogo  = int(row['isnogo'])
             size_txt = str(row['size']).strip()
 
@@ -349,58 +384,94 @@ class sart(BaseTask):
                 pct_label   = SIZE_MAP['medium']['pct']
                 norm_height = SIZE_MAP['medium']['height']
 
-            condition        = 'nogo' if is_nogo == 1 else 'go'
-            correct_response = 0 if is_nogo == 1 else 1
+            condition = 'nogo' if is_nogo == 1 else 'go'
 
-            trial_type_raw = str(row.get('trialtype', condition)).strip()
-            if trial_type_raw.upper() == 'NO-GO':
-                trial_type_out = 'No-Go'
+            # TrialType peut être NaN (ex. : essai 67, bloc Main)
+            trial_type_raw = str(row.get('trialtype', '')).strip()
+            if trial_type_raw.upper() in ('NO-GO', 'NOGO'):
+                trial_type_out = 'NoGo'
             elif trial_type_raw.upper() == 'GO':
                 trial_type_out = 'Go'
             else:
-                trial_type_out = 'Go' if condition == 'go' else 'No-Go'
+                # Fallback basé sur IsNoGo
+                trial_type_out = 'Go' if condition == 'go' else 'NoGo'
 
             trials.append({
-                'trialnum':         int(row['trial']),
-                'digit':            digit,
-                'font_size_norm':   norm_height,
-                'font_size_label':  pct_label,
-                'condition':        condition,
-                'correct_response': correct_response,
-                'trial_type_out':   trial_type_out,
+                'trialnum':        int(row['trial']),
+                'digit':           digit,
+                'font_size_norm':  norm_height,
+                'font_size_label': pct_label,
+                'condition':       condition,
+                'trial_type_out':  trial_type_out,
             })
 
         n_go   = sum(1 for t in trials if t['condition'] == 'go')
         n_nogo = sum(1 for t in trials if t['condition'] == 'nogo')
         self.logger.log(
-            f"[SART] Excel chargé : {len(trials)} essais ({n_go} GO, {n_nogo} NO-GO)"
+            f"[SART] {block_label} chargé : "
+            f"{len(trials)} essais ({n_go} GO, {n_nogo} NO-GO)"
         )
-        if n_go != 200 or n_nogo != 25:
+        return trials, n_go, n_nogo
+
+    def load_trials_from_excel(self, block='Main'):
+        """Charge les essais du bloc spécifié depuis SART_trials_McGill.xlsx.
+
+        Parameters
+        ----------
+        block : str
+            'Training' → 18 essais (colonne Block='Training')
+            'Main'     → 225 essais (colonne Block='Main')
+
+        Returns
+        -------
+        list[dict]
+        """
+        filepath = self.trial_file
+        if not os.path.isfile(filepath):
+            raise FileNotFoundError(f"[SART] Fichier introuvable : {filepath}")
+
+        df = pd.read_excel(filepath)
+        df.columns = [c.strip().lower() for c in df.columns]
+
+        # Supprimer les lignes entièrement vides (lignes fantômes en bas de l'Excel)
+        df = df.dropna(how='all')
+
+        # Filtrer par colonne 'block' (insensible à la casse)
+        mask_blk = (
+            df['block'].astype(str).str.strip().str.lower()
+            == block.strip().lower()
+        )
+        df_blk = df[mask_blk].copy()
+
+        # Supprimer les lignes sans digit exploitable
+        df_blk = df_blk.dropna(subset=['digit'])
+
+        if df_blk.empty:
             self.logger.warn(
-                f"[SART] ⚠️ Attendu: 200 GO + 25 NO-GO, "
-                f"Trouvé: {n_go} GO + {n_nogo} NO-GO"
+                f"[SART] ⚠️ Aucun essai pour le bloc '{block}' dans {filepath}"
             )
-        return trials
+            return []
 
-    def build_training_trials(self):
-        trials = []
-        for i, (digit, size_key) in enumerate(TRAINING_SEQUENCE, start=1):
-            condition = 'nogo' if digit == self.target_digit else 'go'
-            trials.append({
-                'trialnum':         i,
-                'digit':            digit,
-                'font_size_norm':   SIZE_MAP[size_key]['height'],
-                'font_size_label':  SIZE_MAP[size_key]['pct'],
-                'condition':        condition,
-                'correct_response': 1 if condition == 'go' else 0,
-                'trial_type_out':   'Go' if condition == 'go' else 'No-Go',
-            })
+        trials, n_go, n_nogo = self._parse_trials_from_df(
+            df_blk, block_label=block
+        )
 
-        n_go   = sum(1 for t in trials if t['condition'] == 'go')
-        n_nogo = sum(1 for t in trials if t['condition'] == 'nogo')
-        self.logger.log(f"[SART] Training: {len(trials)} essais ({n_go} GO, {n_nogo} NO-GO)")
-        assert len(trials) == 20
-        assert n_nogo == 2
+        # ── Validation des comptages attendus ─────────────────────────────
+        key = block.strip().lower()
+        if key == 'training':
+            if len(trials) != TRAINING_N_TRIALS or n_nogo != TRAINING_N_NOGO:
+                self.logger.warn(
+                    f"[SART] ⚠️ Training : attendu {TRAINING_N_TRIALS} essais "
+                    f"({TRAINING_N_GO} GO, {TRAINING_N_NOGO} NO-GO) — "
+                    f"trouvé {len(trials)} ({n_go} GO, {n_nogo} NO-GO)"
+                )
+        elif key == 'main':
+            if n_go != TEST_N_GO or n_nogo != TEST_N_NOGO:
+                self.logger.warn(
+                    f"[SART] ⚠️ Main : attendu {TEST_N_GO} GO + {TEST_N_NOGO} NO-GO — "
+                    f"trouvé {n_go} GO + {n_nogo} NO-GO"
+                )
+
         return trials
 
     # =================================================================
@@ -421,11 +492,10 @@ class sart(BaseTask):
         responded    = False
         response_key = None
         response_rt  = None
-        responded_in = None
 
         self.flush_keyboard()
 
-        # ── PHASE 1 — DIGIT (250 ms) ──────────────────────────────────────
+        # ── PHASE 1 : DIGIT (250 ms) ──────────────────────────────────────
         self._draw_digit(digit, font_size)
         t_digit_onset = self.win.flip()
 
@@ -436,13 +506,14 @@ class sart(BaseTask):
                     responded    = True
                     response_key = keys[0].name
                     response_rt  = keys[0].tDown - t_digit_onset
-                    responded_in = 'digit'
             self._draw_digit(digit, font_size)
             self.win.flip()
 
-        # ── PHASE 2 — MASK (900 ms) ───────────────────────────────────────
+        # ── PHASE 2 : MASK (900 ms) ───────────────────────────────────────
         self._draw_mask()
         t_mask_onset = self.win.flip()
+
+        t_last_flip = t_mask_onset   # sécurité si mask_n_frames == 1
 
         for _ in range(self.mask_n_frames - 1):
             if not responded:
@@ -451,13 +522,12 @@ class sart(BaseTask):
                     responded    = True
                     response_key = keys[0].name
                     response_rt  = keys[0].tDown - t_digit_onset
-                    responded_in = 'mask'
             self._draw_mask()
             t_last_flip = self.win.flip()
 
         t_mask_offset = t_last_flip
 
-        # ── QC TIMING — enregistrement séparé (ne va pas dans l'Excel) ────
+        # ── QC TIMING (séparé de l'Excel) ─────────────────────────────────
         actual_digit_ms = (t_mask_onset  - t_digit_onset) * 1000
         actual_mask_ms  = (t_mask_offset - t_mask_onset)  * 1000
         actual_total_ms = (t_mask_offset - t_digit_onset) * 1000
@@ -495,21 +565,15 @@ class sart(BaseTask):
             )
 
         # ── RT ET LATENCYTYPE ─────────────────────────────────────────────
-        #
-        #   Type 0 → aucune réponse          (latency = 1150 ms)
-        #   Type 1 → RT < 100 ms             Go Anticipatory / NoGo Failure
-        #   Type 2 → 100 ms ≤ RT < 200 ms    Go Ambiguous    / NoGo Failure
-        #   Type 3 → RT ≥ 200 ms             Go Success      / NoGo Failure
-        #
         if responded:
             response_code = self._key_to_code(response_key)
             rt_ms         = round(response_rt * 1000)
             latency       = rt_ms
-            if rt_ms < RT_ANTICIPATORY_MAX:      # RT < 100 ms
+            if rt_ms < RT_ANTICIPATORY_MAX:
                 latency_type = 1
-            elif rt_ms < RT_AMBIGUOUS_MAX:       # 100 ≤ RT < 200 ms
+            elif rt_ms < RT_AMBIGUOUS_MAX:
                 latency_type = 2
-            else:                                # RT ≥ 200 ms
+            else:
                 latency_type = 3
         else:
             response_code = 0
@@ -543,45 +607,35 @@ class sart(BaseTask):
                 corr     = 0
                 self.perf['go_omission'] += 1
 
-        # ── COMPTEURS CUMULATIFS — phase test uniquement ──────────────────
-        #
-        #   countGo        : tout essai Go rencontré
-        #   countNoGo      : tout essai NoGo rencontré
-        #   countAnticipatory   : Go répondu avec latencyType = 1
-        #   incorrectSuppressions: Go sans réponse (Omission)
-        #   countValidGo   : Go répondu avec latencyType = 3 seulement
-        #   correctSuppressions : NoGo sans réponse (NoGo Success)
-        #
+        # ── COMPTEURS CUMULATIFS (phase test uniquement) ───────────────────
         if phase == 'test':
             if not is_nogo:
                 self.perf['count_go'] += 1
-                if latency_type == 1:          # Anticipatoire
+                if latency_type == 1:
                     self.perf['count_anticipatory'] += 1
-                elif latency_type == 0:        # Omission (pas de réponse sur Go)
+                elif latency_type == 0:
                     self.perf['incorrect_suppressions'] += 1
-                elif latency_type == 3:        # Réponse normale
+                elif latency_type == 3:
                     self.perf['count_valid_go'] += 1
-                # latency_type == 2 (Ambigu) → countGo++ uniquement
             else:
                 self.perf['count_nogo'] += 1
-                if not responded:              # Inhibition réussie
+                if not responded:
                     self.perf['correct_suppressions'] += 1
 
         # ── Validation RT ─────────────────────────────────────────────────
         if responded and isinstance(rt_ms, int) and \
                 (rt_ms < 0 or rt_ms > TOTAL_TRIAL_MS + 100):
             self.logger.warn(
-                f"[SART] ⚠️ RT aberrant trial {trial_index}: {rt_ms}ms "
-                f"(onset={t_digit_onset:.6f})"
+                f"[SART] ⚠️ RT aberrant trial {trial_index}: {rt_ms}ms"
             )
 
-        # ── FEEDBACK (entraînement uniquement) ────────────────────────────
+        # ── FEEDBACK (entraînement, si activé) ────────────────────────────
         if feedback:
             if corr == 1:
                 self.fb_symbol.text, self.fb_symbol.color = '✓', 'green'
                 if accuracy in ('Go Success', 'Go Ambiguous', 'Go Anticipatory'):
                     self.fb_msg.text = f"Correct ! RT : {rt_ms} ms"
-                else:                            # 'NoGo Success'
+                else:
                     self.fb_msg.text = "Correct ! Bonne inhibition ✓"
             else:
                 self.fb_symbol.text, self.fb_symbol.color = '✗', 'red'
@@ -589,16 +643,14 @@ class sart(BaseTask):
                     self.fb_msg.text = (
                         f"Erreur — ne PAS appuyer pour le {self.target_digit}"
                     )
-                else:                            # 'Omission'
+                else:
                     self.fb_msg.text = "Erreur — appuyez pour les autres chiffres"
-
             self.fb_symbol.draw()
             self.fb_msg.draw()
             self.win.flip()
             core.wait(self.feedback_dur)
 
         # ── ENREGISTREMENT ────────────────────────────────────────────────
-        # Lecture des compteurs cumulatifs (0 pour la phase training)
         cnt_ant  = self.perf['count_anticipatory']      if phase == 'test' else 0
         cnt_cs   = self.perf['correct_suppressions']    if phase == 'test' else 0
         cnt_is   = self.perf['incorrect_suppressions']  if phase == 'test' else 0
@@ -660,17 +712,17 @@ class sart(BaseTask):
             self.run_trial(
                 trial_index=i, total_trials=total,
                 trial_info=trial_info, feedback=feedback,
-                phase=phase
+                phase=phase,
             )
         self._print_performance(block_name)
 
     def compute_metrics(self):
-        p = self.perf
+        p          = self.perf
         total_go   = p['go_correct'] + p['go_omission']
         total_nogo = p['nogo_correct'] + p['nogo_commission']
 
-        go_acc   = (p['go_correct'] / total_go   * 100) if total_go   else 0
-        nogo_acc = (p['nogo_correct'] / total_nogo * 100) if total_nogo else 0
+        go_acc   = (p['go_correct']  / total_go   * 100) if total_go   else 0.0
+        nogo_acc = (p['nogo_correct'] / total_nogo * 100) if total_nogo else 0.0
 
         if p['go_rts']:
             rts       = np.array(p['go_rts']) * 1000
@@ -700,14 +752,9 @@ class sart(BaseTask):
         )
 
     # =================================================================
-    # SAVE — Excel McGill (colonnes QC timing exclues)
+    # SAVE — Training + Test dans le même fichier Excel (3 feuilles)
     # =================================================================
     def save_data(self, **kwargs):
-        """Sauvegarde en Excel avec feuilles séparées Training / Test.
-
-        Les colonnes de QC timing (actual_digit_ms, digit_error_ms, etc.)
-        sont stockées uniquement dans le fichier QC séparé, pas ici.
-        """
         has_training = len(self.training_data) > 0
         has_test     = len(self.test_data) > 0
 
@@ -722,8 +769,6 @@ class sart(BaseTask):
         )
         filepath = os.path.join(self.data_dir, filename)
 
-        # Colonnes dans l'ordre exact du fichier de référence McGill
-        # (les colonnes QC timing ne sont PAS incluses ici)
         col_order = [
             'phase', 'trialCount', 'digitPresentationTime', 'maskPresentationTime',
             'trialType', 'digit', 'fontSize', 'response', 'correct', 'rt',
@@ -740,85 +785,135 @@ class sart(BaseTask):
         try:
             with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
                 if has_training:
-                    df_train = _to_df(self.training_data)
-                    df_train.to_excel(writer, sheet_name='Training', index=False)
+                    _to_df(self.training_data).to_excel(
+                        writer, sheet_name='Training', index=False)
                     self.logger.log(
-                        f"[SART] Training: {len(self.training_data)} essais → feuille 'Training'"
+                        f"[SART] Training : {len(self.training_data)} essais → feuille 'Training'"
                     )
-
                 if has_test:
-                    df_test = _to_df(self.test_data)
-                    df_test.to_excel(writer, sheet_name='Test', index=False)
+                    _to_df(self.test_data).to_excel(
+                        writer, sheet_name='Test', index=False)
                     self.logger.log(
-                        f"[SART] Test: {len(self.test_data)} essais → feuille 'Test'"
+                        f"[SART] Test : {len(self.test_data)} essais → feuille 'Test'"
                     )
-
-                # Feuille combinée pour compatibilité
+                # Feuille combinée Training + Test (dans l'ordre chronologique)
                 all_data = self.training_data + self.test_data
                 if all_data:
-                    df_all = _to_df(all_data)
-                    df_all.to_excel(writer, sheet_name='All_Trials', index=False)
+                    _to_df(all_data).to_excel(
+                        writer, sheet_name='All_Trials', index=False)
+                    self.logger.log(
+                        f"[SART] All_Trials : {len(all_data)} essais → feuille 'All_Trials'"
+                    )
 
-            self.logger.ok(f"[SART] Données (Excel McGill) → {filepath}")
+            self.logger.ok(f"[SART] Données → {filepath}")
 
         except Exception as e:
-            self.logger.warn(f"[SART] Erreur sauvegarde Excel : {e}")
+            self.logger.warn(f"[SART] Erreur sauvegarde : {e}")
             csv_path = filepath.replace('.xlsx', '_EMERGENCY.csv')
-            all_data = self.training_data + self.test_data
-            pd.DataFrame(all_data).to_csv(csv_path, index=False)
+            pd.DataFrame(self.training_data + self.test_data).to_csv(
+                csv_path, index=False)
             self.logger.warn(f"[SART] Fallback CSV → {csv_path}")
             filepath = csv_path
 
         return filepath
 
     # =================================================================
-    # MAIN RUN
+    # MAIN RUN — séquence explicite par mode
     # =================================================================
     def run(self):
+        """
+        Séquences selon le mode :
+
+        full          : screen1 → screen2 → fixation(2s) → training(18)
+                        → screen3 → fixation(2s) → test(225)
+
+        training_only : screen1 → screen2 → fixation(2s) → training(18)
+
+        test_only     : screen1 → screen2 → fixation(2s) → test(225)
+        """
         filepath = None
         aborted  = False
 
         try:
+            # ── Écran 1 : toujours affiché en premier ─────────────────────
             self.show_instructions_screen1()
-
-            do_training = self.mode in ('full', 'training_only')
-            do_test     = self.mode in ('full', 'test_only')
 
             self.logger.log(
                 f"[SART] run() | mode={self.mode} | "
-                f"do_training={do_training} | do_test={do_test}"
+                f"training_feedback={self.training_feedback}"
             )
 
-            # ── TRAINING ──────────────────────────────────────────────────
-            if do_training:
-                self.show_instructions_screen2()
+            # ══════════════════════════════════════════════════════════════
+            # MODE FULL
+            # screen2 → fixation(2s) → training(18)
+            # screen3 → fixation(2s) → test(225)
+            # ══════════════════════════════════════════════════════════════
+            if self.mode == 'full':
 
+                # ── Entraînement ──────────────────────────────────────────
+                self.show_instructions_screen2()
+                self._show_fixation_cross()                  # ← 2 s
                 self._set_phase('training')
                 self.perf = self._empty_perf()
                 self.task_clock.reset()
-
-                training_trials = self.build_training_trials()
                 self.run_block(
-                    training_trials, block_name="TRAINING",
-                    feedback=True, phase='training'
+                    self.load_trials_from_excel(block='Training'),
+                    block_name="TRAINING",
+                    feedback=self.training_feedback,
+                    phase='training',
                 )
 
-            # ── TEST ──────────────────────────────────────────────────────
-            if do_test:
-                if do_training:
-                    self.show_instructions_screen3()
-                else:
-                    self.show_instructions_screen2()
-
+                # ── Test ──────────────────────────────────────────────────
+                self.show_instructions_screen3()
+                self._show_fixation_cross()                  # ← 2 s
                 self._set_phase('test')
                 self.perf = self._empty_perf()
                 self.task_clock.reset()
-
-                test_trials = self.load_trials_from_excel()
                 self.run_block(
-                    test_trials, block_name="TEST",
-                    feedback=False, phase='test'
+                    self.load_trials_from_excel(block='Main'),
+                    block_name="TEST",
+                    feedback=False,
+                    phase='test',
                 )
+
+            # ══════════════════════════════════════════════════════════════
+            # MODE TRAINING ONLY
+            # screen2 → fixation(2s) → training(18)
+            # ══════════════════════════════════════════════════════════════
+            elif self.mode == 'training_only':
+
+                self.show_instructions_screen2()
+                self._show_fixation_cross()                  # ← 2 s
+                self._set_phase('training')
+                self.perf = self._empty_perf()
+                self.task_clock.reset()
+                self.run_block(
+                    self.load_trials_from_excel(block='Training'),
+                    block_name="TRAINING",
+                    feedback=self.training_feedback,
+                    phase='training',
+                )
+
+            # ══════════════════════════════════════════════════════════════
+            # MODE TEST ONLY
+            # screen2 → fixation(2s) → test(225)
+            # ══════════════════════════════════════════════════════════════
+            elif self.mode == 'test_only':
+
+                self.show_instructions_screen2()
+                self._show_fixation_cross()                  # ← 2 s
+                self._set_phase('test')
+                self.perf = self._empty_perf()
+                self.task_clock.reset()
+                self.run_block(
+                    self.load_trials_from_excel(block='Main'),
+                    block_name="TEST",
+                    feedback=False,
+                    phase='test',
+                )
+
+            else:
+                raise ValueError(f"[SART] Mode non reconnu : '{self.mode}'")
 
             self.logger.ok("[SART] Tâche terminée ✓")
 
@@ -836,11 +931,10 @@ class sart(BaseTask):
             filepath = self.save_data()
             self._print_performance("FINAL")
 
-            # ── QC : uniquement sur les données TEST ──────────────────────
             qc_timing = self.test_timing if self.test_timing else self.training_timing
             qc_label  = 'test' if self.test_timing else 'training'
 
-            try:
+            if self.doqc:
                 from tasks.qc.qc_sart import SARTTimingQC
                 qc = SARTTimingQC(
                     timing_log=qc_timing,
@@ -856,16 +950,12 @@ class sart(BaseTask):
                 self.logger.log(
                     f"[SART] QC sur phase '{qc_label}' ({len(qc_timing)} essais)"
                 )
-                qc.print_report()
-            except Exception as e:
-                self.logger.warn(f"[SART] QC timing échoué : {e}")
-                import traceback
-                traceback.print_exc()
+                qc.run_qc()
 
             if not aborted:
                 self._show_screen(
                     "Fin de la tâche.\n\nMerci pour votre participation.",
-                    show_mask=False
+                    show_mask=False,
                 )
 
         return filepath

@@ -21,7 +21,7 @@ class ExperimentMenu(QMainWindow):
         self.setFont(self.global_font)
         
         # Fenêtre redimensionnée pour le confort visuel
-        self.setFixedSize(800, 400)
+        self.setFixedSize(800, 550)
         
         self.final_config = None
 
