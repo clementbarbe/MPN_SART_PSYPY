@@ -45,7 +45,7 @@ Fichier de séquence test requis : `SART_trials_McGill.xlsx`
 
 Les résultats sont sauvegardés dans `data/sart/` :
 
-    McGill_SART_Raw_Data_*_{mode}_{timestamp}.xlsx — fichier final (feuilles Training / Test / All_Trials)
+    McGill_SART_Raw_Data_*_{mode}_{timestamp}.xlsx — fichier final (feuilles All_Trials / Summary)
     *_incremental.csv — backup trial par trial (protection anti-crash)
     qc/SART_TimingQC_*_{timestamp}.csv — rapport de qualité temporelle
 
@@ -54,6 +54,9 @@ Les résultats sont sauvegardés dans `data/sart/` :
 - Type de réponse : `Go Success`, `Go Ambiguous`, `Go Anticipatory`, `NoGo Success`, `NoGo Failure`, `Omission`
 - RT et latence (ms), type de latence (0–3)
 - Compteurs cumulatifs : `countGo`, `countNoGo`, `countValidGo`, `countAnticipatory`, `correctSuppressions`, `incorrectSuppressions`
+- Feuille `Summary` : PSCID, heure de début, RT moyen, variabilité des RT (SD en ms), accuracy globale, erreurs de commission/omission, nombres d’essais Go/No-Go, indice de sensibilité d′ et biais de réponse Beta
+- RT moyen et SD : calculés sur les réponses correctes aux essais Go
+- d′ et Beta : calculés à partir du taux de hits Go et du taux de fausses alarmes No-Go, avec correction log-linéaire (+0,5 aux comptes et +1 aux dénominateurs) pour éviter les valeurs infinies
 
 ## Contrôle qualité timing
 

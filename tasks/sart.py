@@ -19,12 +19,15 @@ Classification latencyType :
 Entrée : SART_trials_McGill.xlsx
     · Block='Training' → 18 essais (16 GO, 2 NO-GO)
     · Block='Main'     → 225 essais (200 GO, 25 NO-GO)
-Sortie : McGill_SART_Raw_Data_*.xlsx (feuille unique : All_Trials)
+Sortie : McGill_SART_Raw_Data_*.xlsx (feuilles : All_Trials + Summary)
 """
 
 import gc
+import math
 import os
 import traceback
+from statistics import NormalDist
+
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -88,6 +91,9 @@ COL_ORDER = [
 class sart(BaseTask):
     """Sustained Attention to Response Task — McGill Protocol."""
 
+    # Le protocole est optimisé pour un écran 60 Hz :
+    # 250 ms = 15 frames, 900 ms = 54 frames, fixation 2 s = 120 frames.
+    TARGET_REFRESH_HZ   = 60.0
     DIGIT_DURATION_S    = 0.250
     MASK_DURATION_S     = 0.900
     MASK_RADIUS         = 0.08
@@ -135,14 +141,20 @@ class sart(BaseTask):
 
         self.perf  = self._empty_perf()
         self.doqc  = False
+        self.start_time = None
 
         self._measure_frame_rate()
         self._setup_stimuli()
 
+        measured_txt = (
+            f"{self.measured_frame_rate:.2f}"
+            if self.measured_frame_rate is not None else "N/A"
+        )
         self.logger.log(
             f"[SART] mode={self.mode} | target={self.target_digit} | "
             f"training_feedback={self.training_feedback} | "
-            f"fps={self.frame_rate:.1f} | frame={self.frame_dur_s*1000:.2f}ms"
+            f"timing=60Hz ({self.digit_n_frames}f digit + {self.mask_n_frames}f mask) | "
+            f"measured_fps={measured_txt}"
         )
 
     # ------------------------------------------------------------------
@@ -190,12 +202,32 @@ class sart(BaseTask):
         return KEY_CODE_MAP.get(key_name, ord(key_name[0]))
 
     def _measure_frame_rate(self):
-        measured = self.win.getActualFrameRate(nIdentical=10, nMaxFrames=100, threshold=1)
-        self.frame_rate        = measured if measured else 60.0
-        self.frame_dur_s       = 1.0 / self.frame_rate
-        self.digit_n_frames    = max(1, round(self.DIGIT_DURATION_S    / self.frame_dur_s))
-        self.mask_n_frames     = max(1, round(self.MASK_DURATION_S     / self.frame_dur_s))
-        self.fixation_n_frames = max(1, round(self.FIXATION_DURATION_S / self.frame_dur_s))
+        """Mesure l'écran, mais planifie le protocole sur la grille exacte 60 Hz."""
+        measured = self.win.getActualFrameRate(
+            nIdentical=20, nMaxFrames=180, threshold=1
+        )
+        self.measured_frame_rate = measured
+
+        # Le poste d'acquisition est prévu à 60 Hz. Utiliser la grille nominale
+        # évite que de petites variations de mesure (59.9/60.1 Hz) modifient le
+        # nombre de frames du protocole. Le flip reste synchronisé au VBlank.
+        self.frame_rate  = self.TARGET_REFRESH_HZ
+        self.frame_dur_s = 1.0 / self.TARGET_REFRESH_HZ
+
+        self.digit_n_frames    = int(round(self.DIGIT_DURATION_S    * self.TARGET_REFRESH_HZ))
+        self.mask_n_frames     = int(round(self.MASK_DURATION_S     * self.TARGET_REFRESH_HZ))
+        self.fixation_n_frames = int(round(self.FIXATION_DURATION_S * self.TARGET_REFRESH_HZ))
+
+        if measured is None:
+            self.logger.warn(
+                "[SART] Fréquence réelle non mesurable — timing nominal 60 Hz utilisé."
+            )
+        elif abs(measured - self.TARGET_REFRESH_HZ) > 1.0:
+            self.logger.warn(
+                f"[SART] Écran mesuré à {measured:.2f} Hz, mais le protocole est "
+                f"configuré pour {self.TARGET_REFRESH_HZ:.0f} Hz. Vérifiez le "
+                "réglage Windows/écran avant l'acquisition."
+            )
 
     # ------------------------------------------------------------------
     # STIMULI
@@ -224,9 +256,12 @@ class sart(BaseTask):
             self.win, text='', color='white', height=0.045,
             pos=(0, -0.15), units='height')
 
-    def _draw_digit(self, digit, size):
+    def _prepare_digit(self, digit, size):
+        """Configure le TextStim une seule fois par essai (plus léger à 60 Hz)."""
         self.digit_stim.text   = str(digit)
         self.digit_stim.height = size
+
+    def _draw_digit(self):
         self.digit_stim.draw()
 
     def _draw_mask(self):
@@ -399,20 +434,32 @@ class sart(BaseTask):
         response_key = None
         response_rt  = None
 
+        # Vider une première fois le buffer avant de préparer le stimulus, puis
+        # à nouveau exactement au flip d'apparition du chiffre. Cela évite qu'un
+        # appui effectué à la toute fin de l'essai précédent soit attribué au
+        # nouvel essai avec un RT artificiel de quelques millisecondes.
         self.flush_keyboard()
 
-        # ── Digit (250 ms) ────────────────────────────────────────────────
-        self._draw_digit(digit, font_size)
+        # ── Digit (250 ms = 15 frames à 60 Hz) ──────────────────────────
+        # Préparer le TextStim une seule fois, avant la période critique.
+        self._prepare_digit(digit, font_size)
+        self._draw_digit()
+        self.win.callOnFlip(self.flush_keyboard)
         t_digit_onset = self.win.flip()
 
         for _ in range(self.digit_n_frames - 1):
-            if not responded:
-                keys = self.get_keys([self.response_key])
-                if keys:
+            # Continuer à interroger le clavier même après la première réponse :
+            # le backend PsychoPy peut ainsi traiter proprement les événements
+            # press/release, tandis que seule la première pression est enregistrée.
+            keys = self.get_keys([self.response_key])
+            if not responded and keys:
+                candidate_rt = keys[0].tDown - t_digit_onset
+                # Garde-fou contre un événement résiduel antérieur au stimulus.
+                if candidate_rt >= 0:
                     responded    = True
                     response_key = keys[0].name
-                    response_rt  = keys[0].tDown - t_digit_onset
-            self._draw_digit(digit, font_size)
+                    response_rt  = candidate_rt
+            self._draw_digit()
             self.win.flip()
 
         # ── Masque (900 ms) ───────────────────────────────────────────────
@@ -421,22 +468,37 @@ class sart(BaseTask):
         t_last_flip  = t_mask_onset
 
         for _ in range(self.mask_n_frames - 1):
-            if not responded:
-                keys = self.get_keys([self.response_key])
-                if keys:
+            keys = self.get_keys([self.response_key])
+            if not responded and keys:
+                candidate_rt = keys[0].tDown - t_digit_onset
+                if candidate_rt >= 0:
                     responded    = True
                     response_key = keys[0].name
-                    response_rt  = keys[0].tDown - t_digit_onset
+                    response_rt  = candidate_rt
             self._draw_mask()
             t_last_flip = self.win.flip()
 
         t_mask_offset = t_last_flip
 
-        # ── QC Timing ────────────────────────────────────────────────────
+        # ── QC Timing (grille 60 Hz) ─────────────────────────────────────
         actual_digit_ms = (t_mask_onset  - t_digit_onset) * 1000
         actual_mask_ms  = (t_mask_offset - t_mask_onset)  * 1000
         actual_total_ms = (t_mask_offset - t_digit_onset) * 1000
-        thr = self.frame_dur_s * 1000 * 1.5
+
+        frame_ms = self.frame_dur_s * 1000
+        expected_digit_span_ms = self.digit_n_frames * frame_ms
+        # t_mask_offset correspond au début de la dernière frame du masque :
+        # l'intervalle mesurable entre les deux timestamps contient donc N-1 frames.
+        expected_mask_span_ms = (self.mask_n_frames - 1) * frame_ms
+        expected_total_span_ms = expected_digit_span_ms + expected_mask_span_ms
+
+        digit_err = actual_digit_ms - expected_digit_span_ms
+        mask_err  = actual_mask_ms  - expected_mask_span_ms
+        total_err = actual_total_ms - expected_total_span_ms
+
+        # À 60 Hz, 1 frame = 16.67 ms. On signale à partir d'environ deux
+        # frames perdues afin d'éviter les alertes dues au simple jitter sub-frame.
+        thr = frame_ms * 1.5
 
         self.timing_log.append({
             'trial': trial_index, 'phase': phase,
@@ -444,14 +506,18 @@ class sart(BaseTask):
             'actual_digit_ms': round(actual_digit_ms, 2),
             'actual_mask_ms':  round(actual_mask_ms,  2),
             'actual_total_ms': round(actual_total_ms, 2),
-            'digit_error_ms':  round(actual_digit_ms - 250.0,  2),
-            'mask_error_ms':   round(actual_mask_ms  - 900.0,  2),
-            'total_error_ms':  round(actual_total_ms - 1150.0, 2),
+            'digit_error_ms':  round(digit_err, 2),
+            'mask_error_ms':   round(mask_err,  2),
+            'total_error_ms':  round(total_err, 2),
         })
 
-        for label, err in (('digit', actual_digit_ms - 250), ('mask', actual_mask_ms - 900)):
+        for label, err in (('digit', digit_err), ('mask', mask_err)):
             if abs(err) > thr:
-                self.logger.warn(f"[QC] Trial {trial_index} {label} err={err:+.1f}ms")
+                missed = max(1, int(round(abs(err) / frame_ms)))
+                self.logger.warn(
+                    f"[QC] Trial {trial_index} {label} delay={err:+.1f}ms "
+                    f"(~{missed} frame(s) @60Hz)"
+                )
 
         # ── RT & latencyType ─────────────────────────────────────────────
         if responded:
@@ -480,7 +546,12 @@ class sart(BaseTask):
                             else 'Go Success')
                 corr = 1
                 self.perf['go_correct'] += 1
-                self.perf['go_rts'].append(response_rt)
+                # Les statistiques de RT utilisent uniquement les réponses Go
+                # valides du protocole (latencyType 3, soit RT >= 200 ms).
+                # Les réponses anticipatoires/ambiguës restent enregistrées dans
+                # All_Trials mais ne biaisent plus le RT moyen ni sa SD.
+                if latency_type == 3:
+                    self.perf['go_rts'].append(response_rt)
             else:
                 accuracy, corr = 'Omission', 0
                 self.perf['go_omission'] += 1
@@ -568,9 +639,129 @@ class sart(BaseTask):
             self.run_trial(i, total, t, feedback=feedback, phase=phase)
         self._print_perf(block_name)
 
+        if feedback:
+            self.win.flip()
+
     # ------------------------------------------------------------------
     # METRICS
     # ------------------------------------------------------------------
+    def _summary_records(self):
+        """Retourne le bloc à résumer : test en priorité, sinon entraînement."""
+        return self.test_data if self.test_data else self.training_data
+
+    def _compute_summary_metrics(self):
+        """
+        Calcule les métriques du formulaire de fin de SART.
+
+        - RT moyen et SD : réponses Go valides (latencyType == 3, RT >= 200 ms).
+          Les réponses anticipatoires (<100 ms) et ambiguës (100-199 ms) restent
+          dans les données brutes mais sont exclues des statistiques de RT.
+        - d' et Beta : théorie de la détection du signal, avec
+          hit = réponse correcte Go et false alarm = commission No-Go.
+          Une correction log-linéaire (+0.5 / +1) évite les infinis lorsque
+          les taux bruts valent exactement 0 ou 1.
+        """
+        records = self._summary_records()
+
+        go = [r for r in records if str(r.get('trialType', '')).lower() == 'go']
+        nogo = [r for r in records if str(r.get('trialType', '')).lower() == 'nogo']
+
+        go_correct = sum(int(r.get('correct', 0) == 1) for r in go)
+        nogo_correct = sum(int(r.get('correct', 0) == 1) for r in nogo)
+        omissions = len(go) - go_correct
+        commissions = len(nogo) - nogo_correct
+
+        go_rts = []
+        for r in go:
+            if r.get('correct', 0) != 1 or r.get('latencyType') != 3:
+                continue
+            rt = r.get('rt', '')
+            if rt in ('', None):
+                continue
+            try:
+                go_rts.append(float(rt))
+            except (TypeError, ValueError):
+                pass
+
+        mean_rt = float(np.mean(go_rts)) if go_rts else None
+        sd_rt = float(np.std(go_rts, ddof=1)) if len(go_rts) > 1 else (0.0 if go_rts else None)
+
+        total_trials = len(go) + len(nogo)
+        overall_accuracy = (
+            (go_correct + nogo_correct) / total_trials * 100.0
+            if total_trials else None
+        )
+
+        d_prime = None
+        beta = None
+        if go and nogo:
+            # Correction log-linéaire de Hautus :
+            # H=(hits+0.5)/(signal+1), FA=(false alarms+0.5)/(noise+1).
+            hit_rate = (go_correct + 0.5) / (len(go) + 1.0)
+            fa_rate = (commissions + 0.5) / (len(nogo) + 1.0)
+            normal = NormalDist()
+            z_hit = normal.inv_cdf(hit_rate)
+            z_fa = normal.inv_cdf(fa_rate)
+            d_prime = z_hit - z_fa
+            beta = math.exp(0.5 * (z_fa ** 2 - z_hit ** 2))
+
+        return {
+            'PSCID (C-BIG)': self.nom,
+            'Start Time': (
+                self.start_time.strftime('%Y-%m-%d %H:%M:%S')
+                if self.start_time else ''
+            ),
+            'Mean Response Time (ms)': round(mean_rt, 2) if mean_rt is not None else None,
+            'Response Time Variability (SD in ms)': round(sd_rt, 2) if sd_rt is not None else None,
+            'Overall Accuracy (%)': round(overall_accuracy, 2) if overall_accuracy is not None else None,
+            'Number of Commission Errors': commissions,
+            'Number of Omission Errors': omissions,
+            'Number of Go Trials': len(go),
+            'Number of No-Go Trials': len(nogo),
+            "Sensitivity Index (d')": round(d_prime, 4) if d_prime is not None else None,
+            'Response Bias (Beta)': round(beta, 4) if beta is not None else None,
+        }
+
+    @staticmethod
+    def _display_value(value, decimals=2):
+        if value is None:
+            return 'N/A'
+        try:
+            if np.isnan(value):
+                return 'N/A'
+        except TypeError:
+            pass
+        if isinstance(value, (float, np.floating)):
+            return f"{value:.{decimals}f}"
+        return str(value)
+
+    def _print_summary_terminal(self, summary):
+        """Compte rendu final complet : terminal uniquement."""
+        d_prime = summary.get("Sensitivity Index (d')")
+        print(
+            f"\n{'='*62}\n"
+            f"  SART — COMPTE RENDU FINAL (terminal uniquement)\n"
+            f"{'='*62}\n"
+            f"  PSCID                         : {summary['PSCID (C-BIG)']}\n"
+            f"  Start Time                    : {summary['Start Time']}\n"
+            f"  Mean Response Time            : {self._display_value(summary['Mean Response Time (ms)'])} ms\n"
+            f"  Response Time Variability SD  : {self._display_value(summary['Response Time Variability (SD in ms)'])} ms\n"
+            f"  Overall Accuracy              : {self._display_value(summary['Overall Accuracy (%)'])} %\n"
+            f"  Commission Errors             : {summary['Number of Commission Errors']}\n"
+            f"  Omission Errors               : {summary['Number of Omission Errors']}\n"
+            f"  Go Trials                     : {summary['Number of Go Trials']}\n"
+            f"  No-Go Trials                  : {summary['Number of No-Go Trials']}\n"
+            f"  Sensitivity Index (d')        : {self._display_value(d_prime, 4)}\n"
+            f"  Response Bias (Beta)          : {self._display_value(summary['Response Bias (Beta)'], 4)}\n"
+            f"{'='*62}"
+        )
+
+    def _show_completion_screen(self):
+        """Écran final neutre, sans aucune métrique comportementale."""
+        self._show_screen(
+            "Fin de la tâche.\n\nMerci pour votre participation."
+        )
+
     def _print_perf(self, label=""):
         p  = self.perf
         tg = p['go_correct'] + p['go_omission']
@@ -578,16 +769,17 @@ class sart(BaseTask):
         ga = p['go_correct']   / tg * 100 if tg else 0
         na = p['nogo_correct'] / tn * 100 if tn else 0
         rts = np.array(p['go_rts']) * 1000 if p['go_rts'] else np.array([0.0])
+        rt_sd = np.std(rts, ddof=1) if len(rts) > 1 else 0.0
         print(
             f"\n{'─'*55}\n  Performance — {label}\n{'─'*55}\n"
             f"  GO  : {ga:5.1f}% ({p['go_correct']}/{tg}) | omissions : {p['go_omission']}\n"
             f"  NOGO: {na:5.1f}% ({p['nogo_correct']}/{tn}) | commissions : {p['nogo_commission']}\n"
-            f"  RT  : moy={np.mean(rts):.1f}ms | méd={np.median(rts):.1f}ms\n"
+            f"  RT  : moy={np.mean(rts):.1f}ms | SD={rt_sd:.1f}ms | méd={np.median(rts):.1f}ms\n"
             f"{'─'*55}"
         )
 
     # ------------------------------------------------------------------
-    # SAVE — feuille unique All_Trials
+    # SAVE — All_Trials + Summary
     # ------------------------------------------------------------------
     def save_data(self, **kwargs):
         all_data = self.training_data + self.test_data
@@ -602,11 +794,16 @@ class sart(BaseTask):
 
         df = pd.DataFrame(all_data)
         df = df[[c for c in COL_ORDER if c in df.columns]]
+        summary = self._compute_summary_metrics()
+        summary_df = pd.DataFrame([summary])
 
         try:
             with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
                 df.to_excel(writer, sheet_name='All_Trials', index=False)
-            self.logger.ok(f"[SART] {len(all_data)} essais → {filepath}")
+                summary_df.to_excel(writer, sheet_name='Summary', index=False)
+            self.logger.ok(
+                f"[SART] {len(all_data)} essais + résumé → {filepath}"
+            )
 
         except Exception as e:
             self.logger.warn(f"[SART] Erreur sauvegarde : {e}")
@@ -630,6 +827,7 @@ class sart(BaseTask):
         aborted  = False
 
         try:
+            self.start_time = datetime.now()
             self._screen1()
             self.logger.log(f"[SART] run() | mode={self.mode}")
 
@@ -700,6 +898,8 @@ class sart(BaseTask):
         finally:
             filepath = self.save_data()
             self._print_perf("FINAL")
+            summary = self._compute_summary_metrics()
+            self._print_summary_terminal(summary)
 
             if self.doqc:
                 qc_timing = self.test_timing or self.training_timing
@@ -716,6 +916,9 @@ class sart(BaseTask):
                 self.logger.log(f"[SART] QC '{qc_label}' ({len(qc_timing)} essais)")
 
             if not aborted:
-                self._show_screen("Fin de la tâche.\n\nMerci pour votre participation.")
+                # Aucun résultat comportemental n'est affiché au participant.
+                # Le compte rendu reste disponible dans le terminal et dans
+                # la feuille Excel Summary.
+                self._show_completion_screen()
 
         return filepath
